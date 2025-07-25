@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Server-Side Task Timer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 text-white flex items-center justify-center min-h-screen font-mono">
+
+    <div class="w-full max-w-md mx-auto bg-gray-800 rounded-xl shadow-2xl p-8 space-y-6">
+        
+        <div>
+            <h1 class="text-3xl font-bold text-center text-cyan-400">Persistent Timer</h1>
+            <p class="text-center text-gray-400">Runs on the server. Stays in sync for all visitors.</p>
+        </div>
+
+        <!-- Timer Display -->
+        <div class="text-center bg-gray-900 p-6 rounded-lg">
+            <div id="timer-display" class="text-6xl font-bold tracking-widest text-white">00:00:00</div>
+            <div id="eta-display" class="text-sm text-gray-500 mt-2">ETA: Not Running</div>
+            <div id="status-display" class="text-sm font-bold mt-2 text-yellow-400">STATUS: IDLE</div>
+        </div>
+
+        <!-- Controls -->
+        <div id="controls" class="space-y-4">
+            <div>
+                <label for="minutes" class="block text-sm font-medium text-gray-300">Set Duration (Minutes)</label>
+                <input type="number" id="minutes" value="60" class="mt-1 block w-full bg-gray-700 border-gray-600 rounded-md shadow-sm p-3 text-lg focus:ring-cyan-500 focus:border-cyan-500">
+            </div>
+            <div>
+                <label for="pin" class="block text-sm font-medium text-gray-300">Admin PIN</label>
+                <input type="password" id="pin" placeholder="Enter PIN to Start/Reset" class="mt-1 block w-full bg-gray-700 border-gray-600 rounded-md shadow-sm p-3 text-lg focus:ring-cyan-500 focus:border-cyan-500">
+            </div>
+            <div class="flex space-x-4">
+                <button id="start-button" class="w-full bg-cyan-600 hover:bg-cyan-700 text-white font-bold py-3 px-4 rounded-lg transition duration-300">Start Timer</button>
+                <button id="reset-button" class="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-4 rounded-lg transition duration-300">Reset Timer</button>
+            </div>
+        </div>
+        
+        <div id="loading-message" class="text-center text-gray-500" style="display: none;">Communicating with server...</div>
+
+    </div>
+
+    <script>
+        // --- CONFIGURATION ---
+        const GITHUB_USERNAME = 'Codingpotato42'; // <-- IMPORTANT: Change to your GitHub username
+        const REPO_NAME = 'Task-Timer'; // <-- IMPORTANT: Change to your repository name
+        const GITHUB_TOKEN = ''; // <-- IMPORTANT: You will need to generate a token for this to work. See instructions.
+        const CORRECT_PIN = '7628';
+        
+        // --- DOM ELEMENTS ---
+        const timerDisplay = document.getElementById('timer-display');
+        const etaDisplay = document.getElementById('eta-display');
+        const statusDisplay = document.getElementById('status-display');
+        const startButton = document.getElementById('start-button');
+        const resetButton = document.getElementById('reset-button');
+        const minutesInput = document.getElementById('minutes');
+        const pinInput = document.getElementById('pin');
+        const loadingMessage = document.getElementById('loading-message');
+
+        let timerInterval;
+        let state = { deadline: null, status: 'IDLE' };
+
+        // --- CORE LOGIC ---
+
+        // This function runs every second to update the visual countdown
+        function updateDisplay() {
+            if (!state.deadline) {
+                timerDisplay.textContent = "00:00:00";
+                etaDisplay.textContent = "ETA: Not Running";
+                statusDisplay.textContent = `STATUS: ${state.status}`;
+                return;
+            }
+
+            const now = Date.now();
+            const remaining = state.deadline - now;
+
+            if (remaining <= 0) {
+                clearInterval(timerInterval);
+                timerDisplay.textContent = "00:00:00";
+                etaDisplay.textContent = `Finished at: ${new Date(state.deadline).toLocaleTimeString()}`;
+                statusDisplay.textContent = "STATUS: FINISHED";
+            } else {
+                const hours = Math.floor((remaining / (1000 * 60 * 60)) % 24).toString().padStart(2, '0');
+                const minutes = Math.floor((remaining / 1000 / 60) % 60).toString().padStart(2, '0');
+                const seconds = Math.floor((remaining / 1000) % 60).toString().padStart(2, '0');
+                timerDisplay.textContent = `${hours}:${minutes}:${seconds}`;
+            }
+        }
+
+        // Fetches the latest timer state from the server (the JSON file in your repo)
+        async function fetchState() {
+            try {
+                // Add a random query string to bypass browser cache
+                const response = await fetch(`https://raw.githubusercontent.com/${GITHUB_USERNAME}/${REPO_NAME}/main/timer_state.json?t=${new Date().getTime()}`);
+                if (!response.ok) {
+                    // If the file doesn't exist, assume idle state
+                    if (response.status === 404) {
+                        console.log("State file not found. Assuming idle state.");
+                        state = { deadline: null, status: 'IDLE' };
+                        return;
+                    }
+                    throw new Error('Network response was not ok');
+                }
+                const data = await response.json();
+                state = data;
+                
+                // Convert deadline from string back to a date object timestamp
+                if (state.deadline) {
+                    state.deadline = new Date(state.deadline).getTime();
+                }
+
+            } catch (error) {
+                console.error("Could not fetch state:", error);
+                state = { deadline: null, status: 'ERROR' };
+            } finally {
+                // Start the visual countdown
+                clearInterval(timerInterval);
+                updateDisplay();
+                timerInterval = setInterval(updateDisplay, 1000);
+            }
+        }
+
+        // Sends a command to the backend (GitHub Action) to start or reset the timer
+        async function dispatchAction(actionType, durationMinutes = 0) {
+            if (pinInput.value !== CORRECT_PIN) {
+                alert('Incorrect PIN.');
+                return;
+            }
+            if (!GITHUB_TOKEN) {
+                alert('ERROR: GitHub Personal Access Token is not set in the script.');
+                return;
+            }
+
+            loadingMessage.style.display = 'block';
+            startButton.disabled = true;
+            resetButton.disabled = true;
+
+            const url = `https://api.github.com/repos/${GITHUB_USERNAME}/${REPO_NAME}/dispatches`;
+            
+            const payload = {
+                event_type: actionType,
+                client_payload: {
+                    minutes: durationMinutes
+                }
+            };
+
+            try {
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `token ${GITHUB_TOKEN}`,
+                        'Accept': 'application/vnd.github.v3+json'
+                    },
+                    body: JSON.stringify(payload)
+                });
+
+                if (response.status === 204) {
+                    alert(`Success! The '${actionType}' command was sent to the server. Please wait a minute for the state to update.`);
+                } else {
+                    const errorData = await response.json();
+                    alert(`Error: Could not send command. ${errorData.message}`);
+                }
+            } catch (error) {
+                console.error('Dispatch error:', error);
+                alert('A network error occurred while sending the command.');
+            } finally {
+                loadingMessage.style.display = 'none';
+                startButton.disabled = false;
+                resetButton.disabled = false;
+                pinInput.value = '';
+            }
+        }
+
+        // --- EVENT LISTENERS ---
+        startButton.addEventListener('click', () => {
+            const minutes = parseInt(minutesInput.value, 10);
+            if (isNaN(minutes) || minutes <= 0) {
+                alert('Please enter a valid number of minutes.');
+                return;
+            }
+            dispatchAction('start-timer', minutes);
+        });
+
+        resetButton.addEventListener('click', () => {
+            dispatchAction('reset-timer');
+        });
+
+        // Fetch the initial state when the page loads
+        fetchState();
+        // Also fetch state every 30 seconds to stay in sync
+        setInterval(fetchState, 30000); 
+
+    </script>
+</body>
+</html>
+```
+
+I've changed the `CORRECT_PIN` variable to `'7628'`. Everything else is ready to 
