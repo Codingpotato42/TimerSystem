@@ -1,0 +1,46 @@
+name: Server-Side Timer Workflow
+
+# This workflow is triggered by a 'repository_dispatch' event
+# Our website's JavaScript sends this event to start or reset the timer.
+on:
+  repository_dispatch:
+    types: [start-timer, reset-timer]
+
+jobs:
+  update-timer-state:
+    runs-on: ubuntu-latest
+    steps:
+      # Step 1: Check out the repository's code so we can read/write files
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      # Step 2: Handle the 'start-timer' command
+      - name: Start Timer
+        if: github.event.action == 'start-timer'
+        run: |
+          # Get the duration in minutes from the payload sent by the website
+          MINUTES=${{ github.event.client_payload.minutes }}
+          # Calculate the deadline by adding the minutes to the current time (in UTC)
+          DEADLINE=$(date -d "+$MINUTES minutes" -u +"%Y-%m-%dT%H:%M:%SZ")
+          # Create the JSON file with the new state
+          echo "{\"deadline\": \"$DEADLINE\", \"status\": \"RUNNING\"}" > timer_state.json
+          echo "Timer started. Deadline is $DEADLINE"
+
+      # Step 3: Handle the 'reset-timer' command
+      - name: Reset Timer
+        if: github.event.action == 'reset-timer'
+        run: |
+          # Create a JSON file with an idle state
+          echo "{\"deadline\": null, \"status\": \"IDLE\"}" > timer_state.json
+          echo "Timer has been reset."
+
+      # Step 4: Commit the updated timer_state.json file back to the repository
+      # This is how the state is saved on the server.
+      - name: Commit state file
+        run: |
+          git config --global user.name 'GitHub Actions Bot'
+          git config --global user.email 'actions-bot@github.com'
+          git add timer_state.json
+          # Only commit if there are changes to the file
+          git diff --staged --quiet || git commit -m "Update timer state"
+          git push
